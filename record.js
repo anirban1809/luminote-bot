@@ -9,9 +9,6 @@ puppeteer.use(StealthPlugin());
 const url = process.argv[2] || "https://example.com";
 const outputFile = process.argv[3] || "/recordings/output.mkv";
 
-const width = parseInt(process.env.WIDTH || "1280", 10);
-const height = parseInt(process.env.HEIGHT || "720", 10);
-
 const wait = async (msec) => {
     console.log(`Waiting ${msec / 1000} seconds`);
     return new Promise((res) => setTimeout(res, msec));
@@ -28,15 +25,11 @@ async function main() {
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--autoplay-policy=no-user-gesture-required",
-            "--use-fake-ui-for-media-stream",
-            "--use-fake-device-for-media-stream",
+            // "--use-fake-ui-for-media-stream",
+            // "--use-fake-device-for-media-stream",
             "--disable-features=TranslateUI",
             `--window-size=${1920},${1080}`,
         ],
-        defaultViewport: {
-            width: 1920,
-            height: 1080,
-        },
     });
 
     const page = await browser.newPage();
@@ -71,12 +64,8 @@ async function main() {
     const recorderOptions = {
         followNewTab: false,
         fps: 50,
+        size: { width: 1920, height: 1080 },
     };
-
-    const recorder = new PuppeteerScreenRecorder(page, recorderOptions);
-
-    console.log("Starting screen recorder:", tmpVideo);
-    await recorder.start(tmpVideo);
 
     // --- AUDIO: ffmpeg audio-only from Pulse ---
     console.log("Starting ffmpeg audio recording to", tmpAudio);
@@ -97,6 +86,11 @@ async function main() {
         ],
         { stdio: ["ignore", "inherit", "inherit"] }
     );
+
+    const recorder = new PuppeteerScreenRecorder(page, recorderOptions);
+
+    console.log("Starting screen recorder:", tmpVideo);
+    await recorder.start(tmpVideo);
 
     ffmpegAudio.on("exit", (code) => {
         console.log("ffmpeg audio exited with code", code);
@@ -128,10 +122,15 @@ async function main() {
             tmpVideo,
             "-i",
             tmpAudio,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
             "-c:v",
             "copy",
             "-c:a",
             "aac",
+            "-shortest",
             outputFile,
         ],
         { stdio: ["ignore", "inherit", "inherit"] }
