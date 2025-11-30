@@ -68,7 +68,8 @@ async function main() {
     };
 
     // --- AUDIO: ffmpeg audio-only from Pulse ---
-    console.log("Starting ffmpeg audio recording to", tmpAudio);
+    // ---- AUDIO (ffmpeg from PulseAudio) ----
+    console.log("Starting AUDIO recorder:", tmpAudio);
     const ffmpegAudio = spawn(
         "ffmpeg",
         [
@@ -77,7 +78,12 @@ async function main() {
             "pulse",
             "-i",
             "record_sink.monitor",
-            "-vn", // no video
+
+            // record EXACT duration, avoids long stop lag
+            "-t",
+            "20.0",
+
+            "-vn",
             "-c:a",
             "aac",
             "-b:a",
@@ -87,6 +93,7 @@ async function main() {
         { stdio: ["ignore", "inherit", "inherit"] }
     );
 
+    ffmpegAudio.on("exit", (code) => console.log("ffmpeg audio exited:", code));
     const recorder = new PuppeteerScreenRecorder(page, recorderOptions);
 
     console.log("Starting screen recorder:", tmpVideo);
@@ -101,7 +108,7 @@ async function main() {
 
     console.log("Stopping recorder & audio...");
     await recorder.stop(); // finish video
-    ffmpegAudio.kill("SIGINT"); // stop audio
+    await new Promise((res) => ffmpegAudio.on("close", res));
 
     // Give ffmpeg a moment to flush
     await wait(2000);
