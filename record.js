@@ -8,8 +8,8 @@ const path = require("path");
 puppeteer.use(StealthPlugin());
 
 // Inputs
-const url = process.argv[2] || "https://example.com";
-const outputFile = process.argv[3] || "/recordings/output.mkv";
+const url = process.argv[2] || "https://meet.google.com/kdj-jdjx-fbv";
+const outputFile = process.argv[3] || "./recordings/output.mkv";
 
 const width = parseInt(process.env.WIDTH || "1920", 10);
 const height = parseInt(process.env.HEIGHT || "1080", 10);
@@ -28,23 +28,18 @@ async function main() {
             "--disable-dev-shm-usage",
             "--disable-gpu",
             "--autoplay-policy=no-user-gesture-required",
-            // "--use-fake-ui-for-media-stream",
-            // "--use-fake-device-for-media-stream",
             "--disable-features=TranslateUI",
-            `--window-size=${width},${height}`,
+            `--window-size=${1920},${1080}`,
         ],
     });
 
-    const page = await browser.newPage();
+    const pages = await browser.pages();
+    const page = pages[0]; // use first tab
+
     await page.goto(url, { waitUntil: "networkidle2" });
 
-    // Join Meet
-    await wait(1500);
     await page.click("input.qdOxv-fmcmS-wGMbrd");
-    await page.type(
-        "input.qdOxv-fmcmS-wGMbrd",
-        "luminote.ai bot : AI meeting notetaker"
-    );
+    await page.type("input.qdOxv-fmcmS-wGMbrd", "luminote.ai notetaker");
     await page.click("span.UywwFc-vQzf8d");
 
     await wait(5000); // give Meet time to stabilize
@@ -55,12 +50,11 @@ async function main() {
 
     // ---- VIDEO (puppeteer-screen-recorder) ----
     const recorder = new PuppeteerScreenRecorder(page, {
-        fps: 30,
-        videoFrame: {
-            width: 1920, // Desired width in pixels
-            height: 1080, // Desired height in pixels
-        },
+        fps: 30, // 60 is overkill and heavier
+        videoFrame: { width, height }, // match viewport
         aspectRatio: "16:9",
+        videoCodec: "libx264",
+        videoPreset: "veryfast", // “ultrafast” = lower quality
     });
 
     console.log("Starting VIDEO recorder:", tmpVideo);
@@ -73,18 +67,24 @@ async function main() {
             "-y",
             "-f",
             "pulse",
+            "-ac",
+            "2", // stereo
+            "-ar",
+            "48000", // 48 kHz
             "-i",
             "record_sink.monitor",
-            "-t",
-            String(RECORD_SECONDS),
             "-vn",
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            "160k", // bump a bit if you care about music/voices
+            "-af",
+            "aresample=async=1:first_pts=0",
             tmpAudio,
         ],
-        { stdio: ["ignore", "inherit", "inherit"] }
+        {
+            stdio: ["pipe", "inherit", "inherit"],
+        }
     );
 
     // Create the promise *now*, before ffmpeg can finish
@@ -95,13 +95,40 @@ async function main() {
         });
     });
 
-    // ...
+    await page.exposeFunction("onSpanVisible", async () => {
+        console.log("Span appeared");
+        await page.click("span.VfPpkd-vQzf8d");
+    });
 
-    await wait(RECORD_SECONDS * 1000);
+    await page.evaluate(() => {
+        const targetClass = "VfPpkd-vQzf8d";
 
+        const observer = new MutationObserver(() => {
+            const span = document.querySelector(`span.${targetClass}`);
+            if (span) {
+                window.onSpanVisible();
+            }
+        });
+
+        observer.observe(document.body, {
+            subtree: true,
+            childList: true,
+            attributes: false,
+        });
+    });
+
+    await page.waitForFunction(
+        (text) => {
+            const h1s = Array.from(document.querySelectorAll("h1"));
+            return h1s.some((h) => h.textContent.trim().includes(text));
+        },
+        { timeout: 0 },
+        "You've been removed from the meeting"
+    );
+    ffmpegAudio.stdin.write("q"); // <-- tells ffmpeg to quit immediately
+    ffmpegAudio.stdin.end(); // close stdin
     console.log("Stopping video recorder…");
     await recorder.stop();
-
     // ---- WAIT for AUDIO to finish (clean stop) ----
     await audioDone;
 

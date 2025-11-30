@@ -20,8 +20,8 @@ WORKDIR /app
 
 # Tell Puppeteer not to download its own (x86) Chromium
 ENV PUPPETEER_SKIP_DOWNLOAD=true
-ENV WIDTH=1280
-ENV HEIGHT=720
+ENV WIDTH=1920
+ENV HEIGHT=1080
 RUN npm init -y && \
     npm install puppeteer-screen-recorder puppeteer-extra puppeteer-extra-plugin-stealth
 
