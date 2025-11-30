@@ -3,19 +3,22 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { PuppeteerScreenRecorder } = require("puppeteer-screen-recorder");
 const { spawn } = require("child_process");
 const fs = require("fs");
+const path = require("path");
 
 puppeteer.use(StealthPlugin());
 
+// Inputs
 const url = process.argv[2] || "https://example.com";
 const outputFile = process.argv[3] || "/recordings/output.mkv";
 
-const wait = async (msec) => {
-    console.log(`Waiting ${msec / 1000} seconds`);
-    return new Promise((res) => setTimeout(res, msec));
-};
+const width = parseInt(process.env.WIDTH || "1920", 10);
+const height = parseInt(process.env.HEIGHT || "1080", 10);
+const RECORD_SECONDS = parseInt(process.env.RECORD_SECONDS || "20", 10);
+
+const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
 async function main() {
-    console.log("Starting browser to", url);
+    console.log("Launching browser:", url);
 
     const browser = await puppeteer.launch({
         headless: false,
@@ -28,47 +31,41 @@ async function main() {
             // "--use-fake-ui-for-media-stream",
             // "--use-fake-device-for-media-stream",
             "--disable-features=TranslateUI",
-            `--window-size=${1920},${1080}`,
+            `--window-size=${width},${height}`,
         ],
     });
 
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "networkidle2" });
 
-    await wait(2000);
-    // Toggle camera and mic via shortcuts
-    await page.keyboard.down("Meta");
-    await page.keyboard.press("KeyD");
-    await page.keyboard.up("Meta");
-
-    await page.keyboard.down("Meta");
-    await page.keyboard.press("KeyE");
-    await page.keyboard.up("Meta");
-    await wait(2000);
-
-    // Your Meet join automation
+    // Join Meet
+    await wait(1500);
     await page.click("input.qdOxv-fmcmS-wGMbrd");
     await page.type(
         "input.qdOxv-fmcmS-wGMbrd",
         "luminote.ai bot : AI meeting notetaker"
     );
-
     await page.click("span.UywwFc-vQzf8d");
 
-    await wait(3000);
+    await wait(5000); // give Meet time to stabilize
 
-    // --- VIDEO: puppeteer-screen-recorder ---
+    // ---- PATHS ----
     const tmpVideo = "/tmp/video.mp4";
     const tmpAudio = "/tmp/audio.m4a";
 
-    const recorderOptions = {
-        followNewTab: false,
-        fps: 50,
-        size: { width: 1920, height: 1080 },
-    };
+    // ---- VIDEO (puppeteer-screen-recorder) ----
+    const recorder = new PuppeteerScreenRecorder(page, {
+        fps: 30,
+        videoFrame: {
+            width: 1920, // Desired width in pixels
+            height: 1080, // Desired height in pixels
+        },
+        aspectRatio: "16:9",
+    });
 
-    // --- AUDIO: ffmpeg audio-only from Pulse ---
-    // ---- AUDIO (ffmpeg from PulseAudio) ----
+    console.log("Starting VIDEO recorder:", tmpVideo);
+    await recorder.start(tmpVideo);
+
     console.log("Starting AUDIO recorder:", tmpAudio);
     const ffmpegAudio = spawn(
         "ffmpeg",
@@ -78,11 +75,8 @@ async function main() {
             "pulse",
             "-i",
             "record_sink.monitor",
-
-            // record EXACT duration, avoids long stop lag
             "-t",
-            "20.0",
-
+            String(RECORD_SECONDS),
             "-vn",
             "-c:a",
             "aac",
@@ -93,33 +87,28 @@ async function main() {
         { stdio: ["ignore", "inherit", "inherit"] }
     );
 
-    ffmpegAudio.on("exit", (code) => console.log("ffmpeg audio exited:", code));
-    const recorder = new PuppeteerScreenRecorder(page, recorderOptions);
-
-    console.log("Starting screen recorder:", tmpVideo);
-    await recorder.start(tmpVideo);
-
-    ffmpegAudio.on("exit", (code) => {
-        console.log("ffmpeg audio exited with code", code);
+    // Create the promise *now*, before ffmpeg can finish
+    const audioDone = new Promise((resolve) => {
+        ffmpegAudio.on("close", (code) => {
+            console.log("ffmpeg audio exited:", code);
+            resolve();
+        });
     });
 
-    // Record for 20 seconds (or however long you want)
-    await wait(20000);
+    // ...
 
-    console.log("Stopping recorder & audio...");
-    await recorder.stop(); // finish video
-    await new Promise((res) => ffmpegAudio.on("close", res));
+    await wait(RECORD_SECONDS * 1000);
 
-    // Give ffmpeg a moment to flush
-    await wait(2000);
+    console.log("Stopping video recorder…");
+    await recorder.stop();
 
-    // --- MERGE: video + audio -> final outputFile ---
-    console.log("Merging video and audio into", outputFile);
+    // ---- WAIT for AUDIO to finish (clean stop) ----
+    await audioDone;
 
-    // ensure recordings dir exists
-    try {
-        fs.mkdirSync(require("path").dirname(outputFile), { recursive: true });
-    } catch (_) {}
+    // ---- MERGE ----
+    console.log("Merging video + audio →", outputFile);
+
+    fs.mkdirSync(path.dirname(outputFile), { recursive: true });
 
     const merge = spawn(
         "ffmpeg",
@@ -129,10 +118,13 @@ async function main() {
             tmpVideo,
             "-i",
             tmpAudio,
+
+            // Explicit stream mapping
             "-map",
             "0:v:0",
             "-map",
             "1:a:0",
+
             "-c:v",
             "copy",
             "-c:a",
@@ -143,24 +135,18 @@ async function main() {
         { stdio: ["ignore", "inherit", "inherit"] }
     );
 
-    await new Promise((resolve, reject) => {
-        merge.on("exit", (code) => {
-            console.log("ffmpeg merge exited with code", code);
-            if (code === 0) resolve();
-            else reject(new Error("ffmpeg merge failed with code " + code));
-        });
-    });
+    await new Promise((res) => merge.on("close", res));
 
-    // Optional cleanup
     try {
         fs.unlinkSync(tmpVideo);
-    } catch (_) {}
+    } catch {}
     try {
         fs.unlinkSync(tmpAudio);
-    } catch (_) {}
+    } catch {}
 
     await browser.close();
-    console.log("Done, final file:", outputFile);
+
+    console.log("DONE →", outputFile);
 }
 
 main().catch((err) => {
